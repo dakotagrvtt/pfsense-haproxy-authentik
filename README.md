@@ -163,7 +163,9 @@ When you are done setting up the ACLs, you should have something similar to mine
 ### Setting up Actions
 The actions controls what happens when a incoming request to the proxy matches any ACLs.
 
-Scroll down to the Actions section and add the following actions:
+Scroll down to the Actions section and add the following actions in order. These examples assume HAProxy terminates TLS. If another proxy terminates TLS first, configure the scheme from that trusted proxy instead of accepting a client-supplied `X-Forwarded-Proto`.
+
+The text below is authoritative. The screenshots show the older configuration. For an existing installation, update the `X-Original-URL` and `rd` redirect actions below, then save and apply.
 
 ```
 http-request set-var(req.scheme) str(https) if { ssl_fc }
@@ -181,14 +183,6 @@ http-request set-var(req.scheme) str(http) if !{ ssl_fc }
 ```
 Reference:\
 ![19.png](/images/19.png)
-
-
-
-```
-http-request set-var(req.questionmark) str(?) if { query -m found }
-```
-Reference:\
-![20.png](/images/20.png)
 
 
 
@@ -233,12 +227,11 @@ Reference:\
 
 
 ```
-http-request set-header X-Original-URL %[url]
+http-request set-header X-Original-URL %[var(req.scheme)]://%[req.hdr(Host)]%[pathq]
 ```
-Reference:\
-![29.png](/images/29.png)
-\
-![30.png](/images/30.png)
+Use an absolute URL, including scheme, host, path, and query string. `pathq` preserves the original path and query without duplicating the scheme and host for absolute-form requests. For example, `/reports?sort=name&order=asc` becomes `https://service1.yourdomain.com/reports?sort=name&order=asc`. `set-header` replaces any client-supplied `X-Original-URL`.
+
+This rule must run **before** `lua.auth-intercept`. Keep `x-original-url` in the interceptor's request-header allowlist below. The Lua request connects directly to the selected server, so headers added only in the Authentik backend's HAProxy rules do not reach this auth subrequest.
 
 
 
@@ -252,10 +245,9 @@ Make note of the `authentik-http_ipvANY`. This is the Authentik http backed crea
 
 
 ```
-http-request redirect code 302 location /outpost.goauthentik.io/start?rd=%[hdr(X-Original-URL)] if protected-frontends !{ var(txn.auth_response_successful) -m bool } { var(txn.auth_response_code) -m int 401 } !is_authentikoutpost
+http-request redirect code 302 location /outpost.goauthentik.io/start?rd=%[req.fhdr(X-Original-URL),url_enc] if protected-frontends !{ var(txn.auth_response_successful) -m bool } { var(txn.auth_response_code) -m int 401 } !is_authentikoutpost
 ```
-Reference:\
-![32.png](/images/32.png)
+The `req.fhdr` fetch preserves the whole header, including literal commas in the URL. The `url_enc` converter encodes the complete return URL as one `rd` query parameter. Without it, `&`, `+`, and existing percent escapes can change the return URL during login.
 
 
 ```
@@ -288,6 +280,8 @@ Reference:\
 ![36.png](/images/36.png)
 
 
+Keep the outpost `use_backend` rule **above** the protected application's `use_backend` rules. HAProxy uses the first matching backend rule; the callback and start paths must reach Authentik, not the application. Keep the separate Authentik hostname rule as well.
+
 Now you should add actions for all the backends. \
 ![37.png](/images/37.png)
 \
@@ -303,4 +297,16 @@ Now just save and apply config. You should NOT get any errors. If you get any er
 That should be it. Now you just need to test. Browse to the URL of any of your services that you are protecting with the `protected-frontends` ACL and it should redirect you to Authentik for authentication before you get access to the service.
 
 
-Please feel free to suggest changes or improvements or any ways that my implementation can be made better. All feedback are welcomed
+### Troubleshoot “failed to detect a forward URL from nginx”
+
+The word `nginx` names the `/outpost.goauthentik.io/auth/nginx` endpoint used by this guide. HAProxy can use this endpoint; installing nginx is unnecessary.
+
+In both [Authentik 2026.5.6](https://github.com/goauthentik/authentik/blob/version/2026.5.6/internal/outpost/proxyv2/application/mode_common.go) and [Authentik 2026.8.0](https://github.com/goauthentik/authentik/blob/version/2026.8.0/internal/outpost/proxyv2/application/mode_common.go), `getNginxForwardUrl` reads `X-Original-URL`. It returns an error when the header is empty or the URL cannot be parsed. That logic is unchanged between these versions. A relative URL alone does not trigger this warning, so the corrected absolute-URL rule is not proof of the cause of an upgrade failure.
+
+1. Inspect the failed Authentik event's `headers` field. Check whether `X-Original-Url` is present and contains the original URL. Do not post cookies, authorization headers, or private query values in an issue.
+2. Inspect the generated HAProxy configuration. Confirm that the `X-Original-URL` action runs before `lua.auth-intercept` and that its request-header allowlist contains `x-original-url`.
+3. Confirm that the Lua action selects the intended Authentik HTTP backend and port. A direct request to `/auth/nginx` without `X-Original-URL` is not a valid forward-auth check.
+4. If the header is present, inspect its value for malformed percent escapes or other URL parse errors. Compare an ordinary `/` request with the failing path.
+5. If authentication starts but the callback reaches the application or returns 404, check the outpost backend ordering above. This is a separate routing failure.
+
+After applying the changes, test a protected URL with multiple query parameters. Confirm that login returns to the same path and query, that an authenticated request reaches the application, and that an unavailable Authentik backend does not allow access.
