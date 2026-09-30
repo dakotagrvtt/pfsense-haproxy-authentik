@@ -310,18 +310,3 @@ In both [Authentik 2026.5.6](https://github.com/goauthentik/authentik/blob/versi
 5. If authentication starts but the callback reaches the application or returns 404, check the outpost backend ordering above. This is a separate routing failure.
 
 After applying the changes, test a protected URL with multiple query parameters. Confirm that login returns to the same path and query, that an authenticated request reaches the application, and that an unavailable Authentik backend does not allow access.
-
-### Run the local regression tests
-
-These tests pass with HAProxy 2.8.15, Lua, and OpenSSL on Linux. Check `haproxy -vv` for the version and build options installed on pfSense. The rules require the `pathq` fetch and `url_enc` converter.
-
-With Python 3, `openssl`, and HAProxy built with Lua and OpenSSL support:
-
-```sh
-python3 -m unittest discover -s tests -v
-# To use a specific HAProxy binary:
-HAPROXY=/path/to/haproxy python3 -m unittest discover -s tests -v
-```
-
-The tests extract the actions from this README and run them through HAProxy and the bundled Lua scripts. Local HTTP stubs cover forwarding, return-URL encoding, successful auth, fail-closed responses, and outpost routing. They do not replace a test of login and callbacks on your pfSense and Authentik installation.
-
